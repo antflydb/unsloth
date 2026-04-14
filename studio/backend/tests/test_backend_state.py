@@ -36,33 +36,6 @@ sys.modules.setdefault("loggers", _loggers_stub)
 _structlog_stub = _types.ModuleType("structlog")
 sys.modules.setdefault("structlog", _structlog_stub)
 
-# httpx is pulled in transitively via ``core.inference.__init__`` →
-# ``llama_cpp``. These tests don't touch HTTP; stub it out so the suite
-# stays a pure unit test.
-_httpx_stub = _types.ModuleType("httpx")
-for _exc_name in (
-    "ConnectError",
-    "TimeoutException",
-    "ReadTimeout",
-    "ReadError",
-    "RemoteProtocolError",
-    "CloseError",
-    "HTTPError",
-    "HTTPStatusError",
-):
-    setattr(_httpx_stub, _exc_name, type(_exc_name, (Exception,), {}))
-_httpx_stub.Timeout = type("Timeout", (), {"__init__": lambda self, *a, **kw: None})
-_httpx_stub.Client = type(
-    "Client",
-    (),
-    {
-        "__init__": lambda self, **kw: None,
-        "__enter__": lambda self: self,
-        "__exit__": lambda self, *a: None,
-    },
-)
-sys.modules.setdefault("httpx", _httpx_stub)
-
 
 @pytest.fixture(autouse = True)
 def _reset_backend_state():

@@ -14,6 +14,38 @@ from typing import Annotated, Any, Dict, Literal, Optional, List, Union
 from pydantic import BaseModel, Discriminator, Field, Tag
 
 
+# ── Backend picker ────────────────────────────────────────────────────
+#
+# ``BackendKind`` names the inference engine routing the current chat.
+# "llama-cpp" (default) preserves every pre-picker flow; "termite-zig"
+# opts into the new Zig-native server. Dispatch happens at well-known
+# seams in routes/inference.py and routes/models.py.
+
+BackendKind = Literal["llama-cpp", "termite-zig"]
+
+
+class SetBackendRequest(BaseModel):
+    """Flip the active inference backend."""
+
+    backend: BackendKind = Field(..., description = "Target backend kind.")
+
+
+class SetBackendResponse(BaseModel):
+    """Result of a ``POST /api/inference/backend`` call."""
+
+    backend: BackendKind = Field(..., description = "Kind after the flip.")
+    previous_backend: BackendKind = Field(
+        ..., description = "Kind immediately before the flip."
+    )
+    unloaded: Optional[str] = Field(
+        None,
+        description = (
+            "Model identifier that was unloaded from the outgoing backend "
+            "as part of the flip, if any."
+        ),
+    )
+
+
 class LoadRequest(BaseModel):
     """Request to load a model for inference"""
 
