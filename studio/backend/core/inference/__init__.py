@@ -11,6 +11,12 @@ the subprocess and can be imported directly from .inference when needed.
 
 from .orchestrator import InferenceOrchestrator, get_inference_backend
 from .llama_cpp import LlamaCppBackend
+from .backend_state import (
+    BackendKind,
+    get_backend_kind,
+    get_termite_backend,
+    set_backend_kind,
+)
 
 # Expose InferenceOrchestrator as InferenceBackend for backward compat
 InferenceBackend = InferenceOrchestrator
@@ -20,4 +26,8 @@ __all__ = [
     "InferenceOrchestrator",
     "get_inference_backend",
     "LlamaCppBackend",
+    "BackendKind",
+    "get_backend_kind",
+    "set_backend_kind",
+    "get_termite_backend",
 ]
