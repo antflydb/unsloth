@@ -133,6 +133,12 @@ class TermiteZigBackend:
         if repo_build.is_file():
             return str(repo_build)
 
+        # ``./termite`` at the unsloth repo root — common when the user
+        # builds termite-zig and copies / symlinks the binary up here.
+        repo_root_binary = Path(_REPO_ROOT) / binary_name
+        if repo_root_binary.is_file():
+            return str(repo_root_binary)
+
         home_build = Path.home() / ".unsloth" / "termite" / "bin" / binary_name
         if home_build.is_file():
             return str(home_build)
@@ -187,14 +193,17 @@ class TermiteZigBackend:
                 raise
 
     def _wait_until_ready(self) -> None:
-        """Poll ``/readyz`` until 200, or time out.
+        """Poll ``/ml/v1/healthz`` until 200, or time out.
 
-        termite-zig returns 503 on ``/readyz`` until it has at least
-        discovered its models directory, so a straight 200 is the
-        correct ready signal.
+        All operational endpoints live under the ``/ml/v1/`` prefix
+        (unlike the original Go termite, which exposed them at root).
+        ``/healthz`` tells us the HTTP server is alive; ``/readyz``
+        adds "has discovered at least one model" which is too strict
+        for us — we may want to fire up termite with an empty model
+        directory and let the UI guide the user to ``termite pull``.
         """
         deadline = time.monotonic() + _READY_MAX_WAIT_SECONDS
-        url = f"{self.base_url}/readyz"
+        url = f"{self.base_url}/ml/v1/healthz"
         last_err: Optional[Exception] = None
         while time.monotonic() < deadline:
             try:
@@ -211,6 +220,23 @@ class TermiteZigBackend:
             f"termite-zig at {self.base_url} not ready after "
             f"{_READY_MAX_WAIT_SECONDS}s: {last_err}"
         )
+
+    def version(self) -> Optional[dict]:
+        """Return termite's ``/ml/v1/version`` payload, or None on failure.
+
+        Used by the frontend to surface build info next to the picker
+        (e.g. ``termite-zig v0.1.0 \u2022 backends: native, mlx``). Non-fatal
+        if the call fails; the picker keeps working.
+        """
+        if not self._healthy:
+            return None
+        try:
+            resp = httpx.get(f"{self.base_url}/ml/v1/version", timeout = 2.0)
+            if resp.status_code == 200:
+                return resp.json()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("termite-zig version probe failed: %s", exc)
+        return None
 
     def _terminate_process(self) -> None:
         proc = self._process

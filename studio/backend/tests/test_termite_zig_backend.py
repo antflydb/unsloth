@@ -140,11 +140,16 @@ def test_ensure_running_short_circuits_on_termite_zig_url(monkeypatch):
         def raise_for_status(self):
             return None
 
-    monkeypatch.setattr(
-        termite_zig.httpx,
-        "get",
-        lambda url, timeout = None: _FakeResp(),
-    )
+    # Track the URL ``_wait_until_ready`` polls — regression test for
+    # the real-world bug where we probed ``/readyz`` at the root, which
+    # termite-zig 404s (it serves health endpoints under /ml/v1/).
+    probed_urls: list[str] = []
+
+    def _record_get(url, timeout = None):
+        probed_urls.append(url)
+        return _FakeResp()
+
+    monkeypatch.setattr(termite_zig.httpx, "get", _record_get)
 
     backend = termite_zig.TermiteZigBackend()
     backend._ensure_running()
@@ -152,6 +157,46 @@ def test_ensure_running_short_circuits_on_termite_zig_url(monkeypatch):
     assert popen_calls == []
     assert backend.base_url == "http://127.0.0.1:9999"
     assert backend._process is None
+    assert probed_urls, "expected at least one health probe"
+    assert probed_urls[0].endswith("/ml/v1/healthz"), probed_urls
+
+
+def test_version_returns_termite_build_info(monkeypatch):
+    termite_zig = _load_termite_zig_module()
+
+    monkeypatch.setenv("TERMITE_ZIG_URL", "http://127.0.0.1:9999")
+
+    class _FakeResp:
+        status_code = 200
+
+        def __init__(self, payload):
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+        def raise_for_status(self):
+            return None
+
+    expected = {
+        "version": "0.1.0",
+        "git_commit": "unknown",
+        "runtime": "termite-zig",
+        "backends": {"native": True, "onnx": False, "mlx": True, "wasm": False},
+    }
+
+    def _fake_get(url, timeout = None):
+        if url.endswith("/ml/v1/version"):
+            return _FakeResp(expected)
+        # readyz / healthz probes
+        return _FakeResp({"status": "ok"})
+
+    monkeypatch.setattr(termite_zig.httpx, "get", _fake_get)
+
+    backend = termite_zig.TermiteZigBackend()
+    backend._ensure_running()
+
+    assert backend.version() == expected
 
 
 def test_ensure_running_url_override_retries_until_ready(monkeypatch):

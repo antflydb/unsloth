@@ -4,6 +4,7 @@
 import { authFetch } from "@/features/auth";
 import type {
   AudioGenerationResponse,
+  BackendVersionResponse,
   GetBackendResponse,
   GgufVariantsResponse,
   InferenceStatusResponse,
@@ -378,6 +379,11 @@ export async function setBackend(
     body: JSON.stringify(payload),
   });
   return parseJsonOrThrow<SetBackendResponse>(response);
+}
+
+export async function getBackendVersion(): Promise<BackendVersionResponse> {
+  const response = await authFetch("/api/inference/backend/version");
+  return parseJsonOrThrow<BackendVersionResponse>(response);
 }
 
 export async function generateAudio(

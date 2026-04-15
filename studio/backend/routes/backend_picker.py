@@ -88,6 +88,28 @@ async def get_backend() -> dict:
     return {"backend": get_backend_kind()}
 
 
+@router.get("/backend/version")
+async def get_backend_version() -> dict:
+    """Return build info for the currently-active non-llama.cpp backend.
+
+    v1 only speaks termite-zig; returns ``{"backend": "...", "version": null}``
+    when termite isn't selected or isn't reachable. The frontend renders
+    the line next to the picker so the user can see which build is
+    serving chat completions.
+    """
+    kind = get_backend_kind()
+    if kind != "termite-zig":
+        return {"backend": kind, "version": None}
+    try:
+        termite = get_termite_backend()
+        termite._ensure_running()
+        info = termite.version()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("termite-zig version probe failed: %s", exc)
+        return {"backend": kind, "version": None}
+    return {"backend": kind, "version": info}
+
+
 @router.post("/backend", response_model = SetBackendResponse)
 async def post_backend(req: SetBackendRequest) -> SetBackendResponse:
     """Flip the active inference backend, unloading any outgoing model."""

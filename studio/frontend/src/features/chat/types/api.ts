@@ -23,6 +23,24 @@ export interface GetBackendResponse {
   backend: BackendKind;
 }
 
+/**
+ * Build info reported by a non-llama.cpp backend (today: termite-zig).
+ * Shape mirrors what the termite server returns at /ml/v1/version so
+ * the frontend can show it verbatim without a translation layer.
+ */
+export interface BackendVersionInfo {
+  version?: string;
+  git_commit?: string;
+  build_time?: string;
+  runtime?: string;
+  backends?: Record<string, boolean>;
+}
+
+export interface BackendVersionResponse {
+  backend: BackendKind;
+  version: BackendVersionInfo | null;
+}
+
 export interface BackendModelDetails {
   id: string;
   name?: string | null;
