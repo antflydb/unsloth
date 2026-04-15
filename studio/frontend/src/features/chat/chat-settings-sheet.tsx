@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import {
-  Alert,
-  AlertDescription,
-  AlertTitle,
-} from "@/components/ui/alert";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -63,6 +59,7 @@ import { AnimatePresence, motion } from "motion/react";
 import type { ReactNode } from "react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
+import { BackendPicker } from "./components/backend-picker";
 import { useChatRuntimeStore } from "./stores/chat-runtime-store";
 import {
   DEFAULT_INFERENCE_PARAMS,
@@ -651,7 +648,9 @@ export function ChatSettingsPanel({
     if (!hasCustomPreset) {
       return;
     }
-    const builtinPreset = BUILTIN_PRESETS.find((preset) => preset.name === name);
+    const builtinPreset = BUILTIN_PRESETS.find(
+      (preset) => preset.name === name,
+    );
     const fallbackPreset =
       builtinPreset ??
       BUILTIN_PRESETS.find((preset) => preset.name === "Default") ??
@@ -869,6 +868,8 @@ export function ChatSettingsPanel({
           </div>
         </div>
 
+        <BackendPicker />
+
         <div className="px-2 pb-4">
           <div className="mb-1.5 flex items-center justify-between gap-2">
             <label
@@ -1052,10 +1053,12 @@ export function ChatSettingsPanel({
               <>
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
-                    <div className="text-xs font-medium">Enable custom code</div>
+                    <div className="text-xs font-medium">
+                      Enable custom code
+                    </div>
                     <div className="text-[11px] text-muted-foreground">
-                      Allow models with custom code (e.g. Nemotron). Only
-                      enable if sure.
+                      Allow models with custom code (e.g. Nemotron). Only enable
+                      if sure.
                     </div>
                   </div>
                   <Switch
