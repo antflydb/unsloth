@@ -373,7 +373,23 @@ class TermiteZigBackend:
 
         with httpx.Client(timeout = None) as client:
             with client.stream("POST", url, json = body, headers = headers) as resp:
-                resp.raise_for_status()
+                if resp.status_code >= 400:
+                    # Drain the response so we can surface termite's own
+                    # error body (e.g. ``NoTokenizerFound``) rather than
+                    # raising a bare HTTPStatusError with no context.
+                    body_bytes = b""
+                    try:
+                        for chunk in resp.iter_bytes():
+                            body_bytes += chunk
+                            if len(body_bytes) > 4096:
+                                break
+                    except Exception:  # noqa: BLE001
+                        pass
+                    detail = body_bytes.decode("utf-8", errors = "replace").strip()
+                    raise RuntimeError(
+                        f"termite-zig /ml/v1/chat/completions returned "
+                        f"{resp.status_code}: {detail or '(empty body)'}"
+                    )
                 for raw_line in resp.iter_lines():
                     if cancel_event is not None and cancel_event.is_set():
                         return

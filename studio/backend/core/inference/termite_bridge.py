@@ -33,6 +33,57 @@ logger = get_logger(__name__)
 # GGUF shards look like ``foo-00001-of-00003.gguf``.
 _SHARD_FULL_RE = re.compile(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$")
 
+# Tokenizer / config files termite needs to load a GGUF. GGUFs do embed
+# most of this metadata, but current termite-zig (v0.1.0) still reads
+# ``tokenizer.json`` off disk and fails with ``NoTokenizerFound`` if
+# it's missing. We symlink what the HF repo has; missing files are
+# silently skipped so the bridge stays a best-effort helper.
+_TOKENIZER_AUXILIARY_FILES: tuple[str, ...] = (
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "config.json",
+    "special_tokens_map.json",
+    "generation_config.json",
+)
+
+
+def _candidate_base_repos(gguf_repo: str) -> list[str]:
+    """Guess the non-GGUF sibling repo that holds tokenizer/config files.
+
+    Convention: ``<owner>/<name>-GGUF`` tends to be the quantized build of
+    ``<owner>/<name>``. Studio's own models follow this pattern. We try
+    the canonical suffix strips first, then fall back to the GGUF repo
+    itself so the caller can also look in-place.
+    """
+    candidates: list[str] = []
+    for suffix in ("-GGUF", "-gguf"):
+        if gguf_repo.endswith(suffix):
+            candidates.append(gguf_repo[: -len(suffix)])
+    candidates.append(gguf_repo)
+    # Preserve order while deduplicating.
+    seen: set[str] = set()
+    out: list[str] = []
+    for r in candidates:
+        if r not in seen:
+            seen.add(r)
+            out.append(r)
+    return out
+
+
+def _try_download_aux(
+    repo: str, filename: str, token: Optional[str]
+) -> Optional[Path]:
+    """Attempt to download ``filename`` from ``repo``. None on 404 / error."""
+    from huggingface_hub import hf_hub_download
+
+    try:
+        return Path(hf_hub_download(repo, filename, token = token))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "termite bridge: no %s in %s (%s)", filename, repo, type(exc).__name__
+        )
+        return None
+
 
 def termite_models_dir() -> Path:
     """Resolve termite's models dir.
@@ -150,11 +201,27 @@ def bridge_gguf_to_termite(
     for real_path in local_paths:
         _symlink_idempotent(real_path, dest_dir / real_path.name)
 
+    # ── Tokenizer / config bridge ──────────────────────────────────
+    # termite-zig (v0.1.0) fails with ``NoTokenizerFound`` on chat
+    # completion if there's no on-disk tokenizer.json next to the
+    # GGUF — even though GGUFs carry an embedded tokenizer. Work
+    # around by fetching the companion files from the repo itself
+    # or the likely base repo (``<name>-GGUF`` → ``<name>``).
+    aux_count = 0
+    for filename in _TOKENIZER_AUXILIARY_FILES:
+        for candidate in _candidate_base_repos(hf_repo):
+            aux_path = _try_download_aux(candidate, filename, hf_token)
+            if aux_path is not None:
+                _symlink_idempotent(aux_path, dest_dir / filename)
+                aux_count += 1
+                break  # stop on first repo that has this file
+
     logger.info(
-        "termite bridge: %s variant=%s → %d symlinks under %s",
+        "termite bridge: %s variant=%s → %d GGUF + %d aux symlinks under %s",
         hf_repo,
         hf_variant,
         len(local_paths),
+        aux_count,
         dest_dir,
     )
     # termite's discovery enumerates ``generators/<owner>/<name>`` and

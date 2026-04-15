@@ -100,14 +100,14 @@ export function BackendPicker() {
       if (nextKind === "termite-zig") {
         toast.info("Inference engine: termite-zig", {
           description: result.unloaded
-            ? `Unloaded ${result.unloaded} from llama.cpp. Pick a termite model to continue.`
-            : "Pick a model from the termite registry to continue.",
+            ? `Unloaded ${result.unloaded}. Pick a model to continue.`
+            : "Pick a model to continue.",
         });
       } else {
         toast.info("Inference engine: llama.cpp", {
           description: result.unloaded
-            ? `Unloaded ${result.unloaded} from termite-zig. Pick a GGUF model to continue.`
-            : "Pick a GGUF model to continue.",
+            ? `Unloaded ${result.unloaded}. Pick a model to continue.`
+            : "Pick a model to continue.",
         });
       }
     } catch (err) {

@@ -211,6 +211,120 @@ def test_bridge_is_idempotent(tmp_path, monkeypatch):
     assert link.resolve() == cache_file.resolve()
 
 
+def test_bridge_fetches_tokenizer_from_base_repo_when_gguf_repo_lacks_it(
+    tmp_path, monkeypatch
+):
+    """GGUF-only repos (e.g. ``unsloth/Foo-GGUF``) don't carry a
+    ``tokenizer.json``; termite still needs one on disk. The bridge must
+    fall back to the base repo (``unsloth/Foo``) for auxiliary files.
+    """
+    bridge = _load_bridge_module()
+
+    gguf_cache = (
+        tmp_path
+        / "hf_cache"
+        / "models--unsloth--Qwen3.5-4B-GGUF"
+        / "snapshots"
+        / "g1"
+        / "Qwen3.5-4B-Q4_K_M.gguf"
+    )
+    gguf_cache.parent.mkdir(parents = True)
+    gguf_cache.write_bytes(b"gguf")
+
+    tokenizer_cache = (
+        tmp_path
+        / "hf_cache"
+        / "models--unsloth--Qwen3.5-4B"
+        / "snapshots"
+        / "b1"
+        / "tokenizer.json"
+    )
+    tokenizer_cache.parent.mkdir(parents = True)
+    tokenizer_cache.write_text("{}")
+
+    config_cache = tokenizer_cache.parent / "config.json"
+    config_cache.write_text("{}")
+
+    # Fake HF client: list_repo_files returns different contents per repo;
+    # hf_hub_download raises FileNotFoundError for files that aren't in
+    # that particular repo, so the bridge's fallback logic is exercised.
+    import types
+
+    hf = types.ModuleType("huggingface_hub")
+    hf.list_repo_files = lambda repo, token = None: {
+        "unsloth/Qwen3.5-4B-GGUF": [
+            "README.md",
+            "Qwen3.5-4B-Q4_K_M.gguf",
+        ],
+        "unsloth/Qwen3.5-4B": [
+            "config.json",
+            "tokenizer.json",
+            "special_tokens_map.json",
+        ],
+    }[repo]
+
+    gguf_repo_files = {"Qwen3.5-4B-Q4_K_M.gguf": gguf_cache}
+    base_repo_files = {
+        "tokenizer.json": tokenizer_cache,
+        "config.json": config_cache,
+    }
+
+    def _fake_download(repo, filename, token = None):
+        if repo == "unsloth/Qwen3.5-4B-GGUF":
+            src = gguf_repo_files
+        elif repo == "unsloth/Qwen3.5-4B":
+            src = base_repo_files
+        else:
+            raise FileNotFoundError(repo)
+        if filename not in src:
+            # Mirror huggingface_hub's real behaviour.
+            from huggingface_hub.utils import EntryNotFoundError  # type: ignore
+            raise EntryNotFoundError(filename)
+        return str(src[filename])
+
+    hf.hf_hub_download = _fake_download
+    monkeypatch.setitem(sys.modules, "huggingface_hub", hf)
+    # Also stub the utils submodule so the bridge's error-type import
+    # (if any) works. We don't actually raise EntryNotFoundError here —
+    # we just need a generic exception to trigger the fallback.
+    utils_mod = types.ModuleType("huggingface_hub.utils")
+
+    class _ENF(Exception):
+        pass
+
+    utils_mod.EntryNotFoundError = _ENF
+    monkeypatch.setitem(sys.modules, "huggingface_hub.utils", utils_mod)
+    # Re-wire the download function to use the stubbed exception type.
+    def _fake_download2(repo, filename, token = None):
+        srcs = {
+            "unsloth/Qwen3.5-4B-GGUF": gguf_repo_files,
+            "unsloth/Qwen3.5-4B": base_repo_files,
+        }
+        src = srcs.get(repo)
+        if src is None or filename not in src:
+            raise _ENF(filename)
+        return str(src[filename])
+
+    hf.hf_hub_download = _fake_download2
+
+    models_dir = tmp_path / "termite_models"
+    result = bridge.bridge_gguf_to_termite(
+        hf_repo = "unsloth/Qwen3.5-4B-GGUF",
+        hf_variant = "Q4_K_M",
+        models_dir = models_dir,
+    )
+
+    assert result == "unsloth/Qwen3.5-4B-GGUF"
+
+    model_dir = models_dir / "generators" / "unsloth" / "Qwen3.5-4B-GGUF"
+    assert (model_dir / "Qwen3.5-4B-Q4_K_M.gguf").is_symlink()
+    # This is the key assertion — the tokenizer must be bridged from
+    # the base repo so termite's load doesn't throw NoTokenizerFound.
+    assert (model_dir / "tokenizer.json").is_symlink()
+    assert (model_dir / "tokenizer.json").resolve() == tokenizer_cache.resolve()
+    assert (model_dir / "config.json").is_symlink()
+
+
 def test_bridge_raises_when_variant_not_in_repo(tmp_path, monkeypatch):
     bridge = _load_bridge_module()
 
