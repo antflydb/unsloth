@@ -419,7 +419,40 @@ async def list_local_models(
     """
     List local model candidates from custom models dir, HF cache,
     legacy Unsloth HF cache, and LM Studio directories.
+
+    When the picker is flipped to ``termite-zig``, the list comes from
+    termite's ``/ml/v1/models`` registry instead — the two backends
+    have disjoint model worlds and we don't mix them.
     """
+    # ── Backend picker: termite-zig short-circuit ──
+    from core.inference.backend_state import get_backend_kind, get_termite_backend
+
+    if get_backend_kind() == "termite-zig":
+        termite = get_termite_backend()
+        try:
+            termite._ensure_running()
+            entries = termite.list_models()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("termite-zig /ml/v1/models failed: %s", exc)
+            entries = []
+        models = [
+            LocalModelInfo(
+                id = e.get("id", ""),
+                display_name = e.get("id", ""),
+                path = termite.base_url,
+                source = "custom",
+                model_id = e.get("id"),
+            )
+            for e in entries
+            if e.get("id")
+        ]
+        return LocalModelListResponse(
+            models_dir = "(termite-zig registry)",
+            hf_cache_dir = None,
+            lmstudio_dirs = [],
+            models = models,
+        )
+
     from utils.paths import (
         legacy_hf_cache_dir,
         hf_default_cache_dir,
