@@ -3,6 +3,7 @@
 
 import { create } from "zustand";
 import { toast } from "sonner";
+import type { BackendKind } from "../types/api";
 import {
   DEFAULT_INFERENCE_PARAMS,
   type ChatLoraSummary,
@@ -16,6 +17,12 @@ const MAX_TOOL_CALLS_KEY = "unsloth_max_tool_calls_per_message";
 const TOOL_CALL_TIMEOUT_KEY = "unsloth_tool_call_timeout";
 const HF_TOKEN_KEY = "unsloth_hf_token";
 const INFERENCE_PARAMS_KEY = "unsloth_chat_inference_params";
+const BACKEND_KIND_KEY = "unsloth_backend_kind";
+
+function loadBackendKind(): BackendKind {
+  const raw = loadString(BACKEND_KIND_KEY, "llama-cpp");
+  return raw === "termite-zig" ? "termite-zig" : "llama-cpp";
+}
 let hasShownInferencePersistenceWarning = false;
 
 function canUseStorage(): boolean {
@@ -142,6 +149,8 @@ function saveInferenceParams(params: InferenceParams): boolean {
 }
 
 type ChatRuntimeStore = {
+  backendKind: BackendKind;
+  setBackendKind: (kind: BackendKind) => void;
   params: InferenceParams;
   models: ChatModelSummary[];
   loras: ChatLoraSummary[];
@@ -212,6 +221,12 @@ type ChatRuntimeStore = {
 };
 
 export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
+  backendKind: loadBackendKind(),
+  setBackendKind: (backendKind) =>
+    set(() => {
+      saveString(BACKEND_KIND_KEY, backendKind);
+      return { backendKind };
+    }),
   params: loadInferenceParams(),
   models: [],
   loras: [],

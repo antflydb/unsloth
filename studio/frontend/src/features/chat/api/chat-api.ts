@@ -4,6 +4,7 @@
 import { authFetch } from "@/features/auth";
 import type {
   AudioGenerationResponse,
+  GetBackendResponse,
   GgufVariantsResponse,
   InferenceStatusResponse,
   ListLorasResponse,
@@ -12,6 +13,8 @@ import type {
   LoadModelResponse,
   OpenAIChatChunk,
   OpenAIChatCompletionsRequest,
+  SetBackendRequest,
+  SetBackendResponse,
   UnloadModelRequest,
   ValidateModelResponse,
 } from "../types/api";
@@ -338,6 +341,27 @@ export async function* streamChatCompletions(
       separatorIndex = buffer.search(/\r?\n\r?\n/);
     }
   }
+}
+
+// ── Backend picker ────────────────────────────────────────────────────
+//
+// Two wrappers for GET/POST /api/inference/backend. Kept at the bottom
+// of this module so the picker diff is local and additive.
+
+export async function getBackend(): Promise<GetBackendResponse> {
+  const response = await authFetch("/api/inference/backend");
+  return parseJsonOrThrow<GetBackendResponse>(response);
+}
+
+export async function setBackend(
+  payload: SetBackendRequest,
+): Promise<SetBackendResponse> {
+  const response = await authFetch("/api/inference/backend", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return parseJsonOrThrow<SetBackendResponse>(response);
 }
 
 export async function generateAudio(

@@ -1,6 +1,28 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+/**
+ * Inference engine selected by the chat picker.
+ * "llama-cpp" preserves the original flow (GGUF via llama-server);
+ * "termite-zig" routes chat through the Zig implementation under
+ * ./termite-zig for dogfooding.
+ */
+export type BackendKind = "llama-cpp" | "termite-zig";
+
+export interface SetBackendRequest {
+  backend: BackendKind;
+}
+
+export interface SetBackendResponse {
+  backend: BackendKind;
+  previous_backend: BackendKind;
+  unloaded: string | null;
+}
+
+export interface GetBackendResponse {
+  backend: BackendKind;
+}
+
 export interface BackendModelDetails {
   id: string;
   name?: string | null;
