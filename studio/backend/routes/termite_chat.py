@@ -147,3 +147,78 @@ async def stream_termite_chat(
     }
     yield f"data: {json.dumps(final_chunk)}\n\n"
     yield "data: [DONE]\n\n"
+
+
+async def collect_termite_chat(
+    *,
+    payload: Any,
+    request: Any,
+    termite_backend: Any,
+) -> dict:
+    """Run a chat completion and collect the full result as a single JSON.
+
+    Used when the OpenAI-compatible client sends ``stream: false``. The
+    shape matches OpenAI's ``chat.completion`` object so external tools
+    (SDKs, evaluation harnesses) don't have to special-case Studio.
+    """
+    if not termite_backend.is_loaded or not termite_backend.model_identifier:
+        raise RuntimeError(
+            "termite-zig: no model selected. Pick a model in the Studio UI first."
+        )
+
+    model_name = termite_backend.model_identifier
+    completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+    created = int(time.time())
+    cancel_event = threading.Event()
+
+    messages = [
+        m if isinstance(m, dict) else m.model_dump(exclude_none = True)
+        for m in payload.messages
+    ]
+
+    gen = termite_backend.generate_chat_completion(
+        messages = messages,
+        temperature = payload.temperature,
+        top_p = payload.top_p,
+        top_k = payload.top_k,
+        min_p = payload.min_p,
+        max_tokens = payload.max_tokens,
+        repetition_penalty = payload.repetition_penalty,
+        presence_penalty = payload.presence_penalty,
+        cancel_event = cancel_event,
+        enable_thinking = payload.enable_thinking,
+    )
+
+    final_text = ""
+    try:
+        while True:
+            if await request.is_disconnected():
+                cancel_event.set()
+                break
+            cumulative = await asyncio.to_thread(next, gen, _STREAM_SENTINEL)
+            if cumulative is _STREAM_SENTINEL:
+                break
+            if isinstance(cumulative, str):
+                final_text = cumulative
+    finally:
+        try:
+            gen.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    return {
+        "id": completion_id,
+        "object": "chat.completion",
+        "created": created,
+        "model": model_name,
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": final_text},
+                "finish_reason": "stop",
+            }
+        ],
+        # termite doesn't yet emit usage in the SSE stream; future work
+        # can carry it over by augmenting generate_chat_completion.
+        "usage": None,
+    }

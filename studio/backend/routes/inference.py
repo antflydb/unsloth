@@ -608,9 +608,19 @@ async def unload_model(
 ):
     """
     Unload a model from memory.
-    Routes to the correct backend (llama-server for GGUF, Unsloth otherwise).
+    Routes to the correct backend (termite-zig, llama-server, or Unsloth).
     """
     try:
+        # ── Backend picker: termite-zig short-circuit ──
+        # The chat runtime always calls /unload before /load when the user
+        # switches models; without this guard, falling through to the
+        # Unsloth path raises and wedges the UI in termite-zig mode.
+        if get_backend_kind() == "termite-zig":
+            termite = get_termite_backend()
+            termite.unload_model()
+            logger.info("Unloaded termite-zig model: %s", request.model_path)
+            return UnloadResponse(status = "unloaded", model = request.model_path)
+
         # Check if the GGUF backend has this model loaded or is loading it
         llama_backend = get_llama_cpp_backend()
         if llama_backend.is_active and (
@@ -1058,24 +1068,34 @@ async def openai_chat_completions(
     """
     # ── Backend picker: termite-zig short-circuit ──
     # Delegated to a small helper so this function's diff against
-    # upstream Unsloth stays minimal. v1 only supports streaming via
-    # termite; tools / audio / images are not wired up.
+    # upstream Unsloth stays minimal. Honours payload.stream so
+    # non-streaming OpenAI-compatible clients keep getting a single
+    # ``chat.completion`` JSON object.
     if get_backend_kind() == "termite-zig":
-        from routes.termite_chat import stream_termite_chat
+        from routes.termite_chat import (
+            collect_termite_chat,
+            stream_termite_chat,
+        )
 
         termite = get_termite_backend()
-        return StreamingResponse(
-            stream_termite_chat(
-                payload = payload,
-                request = request,
-                termite_backend = termite,
-            ),
-            media_type = "text/event-stream",
-            headers = {
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-            },
+        if payload.stream:
+            return StreamingResponse(
+                stream_termite_chat(
+                    payload = payload,
+                    request = request,
+                    termite_backend = termite,
+                ),
+                media_type = "text/event-stream",
+                headers = {
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                },
+            )
+        return await collect_termite_chat(
+            payload = payload,
+            request = request,
+            termite_backend = termite,
         )
 
     llama_backend = get_llama_cpp_backend()

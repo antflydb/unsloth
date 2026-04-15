@@ -183,6 +183,28 @@ def test_stream_stops_on_disconnect():
     assert 0 < len(contents) < 4
 
 
+def test_collect_returns_full_chat_completion():
+    """Non-streaming clients (``stream: false``) must get a single JSON
+    ``chat.completion`` object with the full assistant message."""
+    helper = _load_helper()
+    fake = _FakeTermite(["Hel", "Hello", "Hello, world"])
+
+    async def run():
+        return await helper.collect_termite_chat(
+            payload = _FakePayload(),
+            request = _FakeRequest(),
+            termite_backend = fake,
+        )
+
+    result = asyncio.run(run())
+
+    assert result["object"] == "chat.completion"
+    assert result["model"] == "google/gemma-3-1b-it"
+    assert result["choices"][0]["finish_reason"] == "stop"
+    assert result["choices"][0]["message"]["role"] == "assistant"
+    assert result["choices"][0]["message"]["content"] == "Hello, world"
+
+
 def test_stream_raises_when_no_model_selected():
     helper = _load_helper()
 

@@ -740,11 +740,15 @@ export function ChatPage(): ReactElement {
     return [...fromLoras, ...localModels];
   }, [lorasFromStore, localModels]);
 
+  const backendKind = useChatRuntimeStore((state) => state.backendKind);
   useEffect(() => {
     if (getTrainingCompareHandoff()) return;
     void refresh();
     refreshLocalModels();
-  }, [refresh, refreshLocalModels]);
+    // ``backendKind`` is included in deps so switching the inference
+    // engine refetches the model inventory from the new backend's
+    // registry instead of leaving the previous backend's list visible.
+  }, [refresh, refreshLocalModels, backendKind]);
 
   useEffect(() => {
     const handoff = getTrainingCompareHandoff();
