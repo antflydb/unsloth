@@ -268,25 +268,25 @@ class TermiteZigBackend:
         n_ctx: int = 0,
         **_unused: Any,
     ) -> bool:
-        """Validate the identifier against termite's model registry.
+        """Record the identifier and let termite lazy-load on first chat.
 
-        termite-zig lazy-loads models on first chat request, so the
-        only eager work here is (a) ensure termite is running and
-        (b) confirm the identifier is actually in its registry. We
-        cache the identifier locally so ``is_loaded`` / ``model_identifier``
-        behave like the llama.cpp backend once this has returned.
+        termite-zig discovers models from its models dir on each
+        registry read, and loads weights on the first chat request.
+        The only eager work here is (a) ensure termite is running and
+        (b) cache the identifier so ``is_loaded`` / ``model_identifier``
+        behave like the llama.cpp backend.
+
+        No registry validation: the caller (routes/inference.py) is
+        responsible for bridging the HF cache into termite's layout
+        before calling this, and a mismatched id will surface as a
+        useful error on the first chat request.
         """
         self._ensure_running()
-
-        models = self.list_models()
-        known = {m.get("id") for m in models}
-        if model_identifier not in known:
-            raise RuntimeError(
-                f"termite-zig does not know model {model_identifier!r}. "
-                f"Known ids: {sorted(i for i in known if i)[:20]}"
-            )
         self._model_identifier = model_identifier
-        logger.info("termite-zig: selected model %s (lazy-load on first request)", model_identifier)
+        logger.info(
+            "termite-zig: selected model %s (lazy-load on first request)",
+            model_identifier,
+        )
         return True
 
     def unload_model(self) -> bool:

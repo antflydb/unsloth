@@ -171,25 +171,48 @@ async def load_model(
         # inference backend — no need for ensure_transformers_version() here.
 
         # ── Backend picker: termite-zig short-circuit ──
-        # When the user has selected termite-zig, bypass the GGUF /
-        # Unsloth load machinery. termite lazy-loads on first chat
-        # request; load_model only validates the identifier exists
-        # in the termite model registry.
+        # When the user has selected termite-zig, reuse Studio's
+        # existing HF-cache download path and then bridge the cached
+        # GGUF into termite's rigid layout via symlinks — so the
+        # exact same file serves both backends. No second download.
+        # termite lazy-loads weights on first chat request.
         if get_backend_kind() == "termite-zig":
+            from core.inference.termite_bridge import bridge_gguf_to_termite
+
+            # Resolve the HF repo + variant. ModelConfig.from_identifier
+            # handles Unsloth's full set of identifier shapes (bare repo
+            # id, model name, etc.) and doesn't trigger any download.
+            config = ModelConfig.from_identifier(
+                model_id = request.model_path,
+                hf_token = request.hf_token,
+                gguf_variant = request.gguf_variant,
+            )
+            if config and config.is_gguf and config.gguf_hf_repo:
+                identifier = await asyncio.to_thread(
+                    bridge_gguf_to_termite,
+                    hf_repo = config.gguf_hf_repo,
+                    hf_variant = config.gguf_variant,
+                    hf_token = request.hf_token,
+                )
+            else:
+                # Non-GGUF identifier in termite mode — pass through and
+                # let termite's registry decide if it's resolvable.
+                identifier = request.model_path
+
             termite = get_termite_backend()
             await asyncio.to_thread(
                 termite.load_model,
-                model_identifier = request.model_path,
+                model_identifier = identifier,
                 hf_token = request.hf_token,
                 n_ctx = request.max_seq_length,
             )
             return LoadResponse(
                 status = "loaded",
-                model = request.model_path,
-                display_name = request.model_path,
+                model = identifier,
+                display_name = identifier,
                 is_vision = False,
                 is_lora = False,
-                is_gguf = False,
+                is_gguf = True,
                 is_audio = False,
                 audio_type = None,
                 has_audio_input = False,
