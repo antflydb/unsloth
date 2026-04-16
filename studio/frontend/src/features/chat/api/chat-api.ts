@@ -4,6 +4,8 @@
 import { authFetch } from "@/features/auth";
 import type {
   AudioGenerationResponse,
+  BackendVersionResponse,
+  GetBackendResponse,
   GgufVariantsResponse,
   InferenceStatusResponse,
   ListLorasResponse,
@@ -12,6 +14,8 @@ import type {
   LoadModelResponse,
   OpenAIChatChunk,
   OpenAIChatCompletionsRequest,
+  SetBackendRequest,
+  SetBackendResponse,
   UnloadModelRequest,
   ValidateModelResponse,
 } from "../types/api";
@@ -49,7 +53,9 @@ export async function listModels(): Promise<ListModelsResponse> {
   return parseJsonOrThrow<ListModelsResponse>(response);
 }
 
-export async function listLoras(outputsDir?: string): Promise<ListLorasResponse> {
+export async function listLoras(
+  outputsDir?: string,
+): Promise<ListLorasResponse> {
   const query = outputsDir
     ? `?${new URLSearchParams({ outputs_dir: outputsDir }).toString()}`
     : "";
@@ -107,13 +113,19 @@ export async function getGgufDownloadProgress(
   repoId: string,
   variant: string,
   expectedBytes: number,
-): Promise<{ downloaded_bytes: number; expected_bytes: number; progress: number }> {
+): Promise<{
+  downloaded_bytes: number;
+  expected_bytes: number;
+  progress: number;
+}> {
   const params = new URLSearchParams({
     repo_id: repoId,
     variant,
     expected_bytes: String(expectedBytes),
   });
-  const response = await authFetch(`/api/models/gguf-download-progress?${params}`);
+  const response = await authFetch(
+    `/api/models/gguf-download-progress?${params}`,
+  );
   return parseJsonOrThrow(response);
 }
 
@@ -208,7 +220,10 @@ export async function listCachedModels(): Promise<CachedModelRepo[]> {
   return data.cached;
 }
 
-export async function deleteCachedModel(repoId: string, variant?: string): Promise<void> {
+export async function deleteCachedModel(
+  repoId: string,
+  variant?: string,
+): Promise<void> {
   const payload: Record<string, string> = { repo_id: repoId };
   if (variant) payload.variant = variant;
   const response = await authFetch("/api/models/delete-cached", {
@@ -324,12 +339,17 @@ export async function* streamChatCompletions(
       }
       // Tool status events are custom SSE payloads, not OpenAI chunks
       if ("type" in parsed && parsed.type === "tool_status") {
-        yield { _toolStatus: parsed.content ?? "" } as unknown as OpenAIChatChunk;
+        yield {
+          _toolStatus: parsed.content ?? "",
+        } as unknown as OpenAIChatChunk;
         separatorIndex = buffer.search(/\r?\n\r?\n/);
         continue;
       }
       // Tool start/end events carry full input/output for the tool outputs panel
-      if ("type" in parsed && (parsed.type === "tool_start" || parsed.type === "tool_end")) {
+      if (
+        "type" in parsed &&
+        (parsed.type === "tool_start" || parsed.type === "tool_end")
+      ) {
         yield { _toolEvent: parsed } as unknown as OpenAIChatChunk;
         separatorIndex = buffer.search(/\r?\n\r?\n/);
         continue;
@@ -338,6 +358,32 @@ export async function* streamChatCompletions(
       separatorIndex = buffer.search(/\r?\n\r?\n/);
     }
   }
+}
+
+// ── Backend picker ────────────────────────────────────────────────────
+//
+// Two wrappers for GET/POST /api/inference/backend. Kept at the bottom
+// of this module so the picker diff is local and additive.
+
+export async function getBackend(): Promise<GetBackendResponse> {
+  const response = await authFetch("/api/inference/backend");
+  return parseJsonOrThrow<GetBackendResponse>(response);
+}
+
+export async function setBackend(
+  payload: SetBackendRequest,
+): Promise<SetBackendResponse> {
+  const response = await authFetch("/api/inference/backend", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return parseJsonOrThrow<SetBackendResponse>(response);
+}
+
+export async function getBackendVersion(): Promise<BackendVersionResponse> {
+  const response = await authFetch("/api/inference/backend/version");
+  return parseJsonOrThrow<BackendVersionResponse>(response);
 }
 
 export async function generateAudio(

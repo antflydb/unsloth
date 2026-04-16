@@ -57,6 +57,7 @@ from datetime import datetime
 # Import routers
 from routes import (
     auth_router,
+    backend_picker_router,
     data_recipe_router,
     datasets_router,
     export_router,
@@ -172,6 +173,9 @@ app.include_router(auth_router, prefix = "/api/auth", tags = ["auth"])
 app.include_router(training_router, prefix = "/api/train", tags = ["training"])
 app.include_router(models_router, prefix = "/api/models", tags = ["models"])
 app.include_router(inference_router, prefix = "/api/inference", tags = ["inference"])
+app.include_router(
+    backend_picker_router, prefix = "/api/inference", tags = ["inference"]
+)
 
 # OpenAI-compatible endpoints: mount the same inference router at /v1
 # so external tools (Open WebUI, SillyTavern, etc.) can use the

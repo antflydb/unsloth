@@ -419,6 +419,12 @@ async def list_local_models(
     """
     List local model candidates from custom models dir, HF cache,
     legacy Unsloth HF cache, and LM Studio directories.
+
+    The list is backend-independent: termite-zig and llama.cpp both
+    serve models out of the same HuggingFace cache (termite via the
+    symlink bridge in ``core/inference/termite_bridge.py``). The user
+    picks a GGUF here and the backend picker decides which engine
+    actually runs it.
     """
     from utils.paths import (
         legacy_hf_cache_dir,

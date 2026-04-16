@@ -54,6 +54,10 @@ if str(backend_path) not in sys.path:
 try:
     from core.inference import get_inference_backend
     from core.inference.llama_cpp import LlamaCppBackend
+    from core.inference.backend_state import (
+        get_backend_kind,
+        get_termite_backend,
+    )
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
     from utils.models.model_config import load_model_defaults
@@ -63,6 +67,10 @@ except ImportError:
         sys.path.insert(0, str(parent_backend))
     from core.inference import get_inference_backend
     from core.inference.llama_cpp import LlamaCppBackend
+    from core.inference.backend_state import (
+        get_backend_kind,
+        get_termite_backend,
+    )
     from utils.models import ModelConfig
     from utils.inference import load_inference_config
     from utils.models.model_config import load_model_defaults
@@ -161,6 +169,57 @@ async def load_model(
     try:
         # Version switching is handled automatically by the subprocess-based
         # inference backend — no need for ensure_transformers_version() here.
+
+        # ── Backend picker: termite-zig short-circuit ──
+        # When the user has selected termite-zig, reuse Studio's
+        # existing HF-cache download path and then bridge the cached
+        # GGUF into termite's rigid layout via symlinks — so the
+        # exact same file serves both backends. No second download.
+        # termite lazy-loads weights on first chat request.
+        if get_backend_kind() == "termite-zig":
+            from core.inference.termite_bridge import bridge_gguf_to_termite
+
+            # Resolve the HF repo + variant. ModelConfig.from_identifier
+            # handles Unsloth's full set of identifier shapes (bare repo
+            # id, model name, etc.) and doesn't trigger any download.
+            config = ModelConfig.from_identifier(
+                model_id = request.model_path,
+                hf_token = request.hf_token,
+                gguf_variant = request.gguf_variant,
+            )
+            if config and config.is_gguf and config.gguf_hf_repo:
+                identifier = await asyncio.to_thread(
+                    bridge_gguf_to_termite,
+                    hf_repo = config.gguf_hf_repo,
+                    hf_variant = config.gguf_variant,
+                    hf_token = request.hf_token,
+                )
+            else:
+                # Non-GGUF identifier in termite mode — pass through and
+                # let termite's registry decide if it's resolvable.
+                identifier = request.model_path
+
+            termite = get_termite_backend()
+            await asyncio.to_thread(
+                termite.load_model,
+                model_identifier = identifier,
+                hf_token = request.hf_token,
+                n_ctx = request.max_seq_length,
+            )
+            return LoadResponse(
+                status = "loaded",
+                model = identifier,
+                display_name = identifier,
+                is_vision = False,
+                is_lora = False,
+                is_gguf = True,
+                is_audio = False,
+                audio_type = None,
+                has_audio_input = False,
+                inference = {},
+                requires_trust_remote_code = False,
+                chat_template = None,
+            )
 
         # ── Already-loaded check: skip reload if the exact model is active ──
         backend = get_inference_backend()
@@ -572,9 +631,19 @@ async def unload_model(
 ):
     """
     Unload a model from memory.
-    Routes to the correct backend (llama-server for GGUF, Unsloth otherwise).
+    Routes to the correct backend (termite-zig, llama-server, or Unsloth).
     """
     try:
+        # ── Backend picker: termite-zig short-circuit ──
+        # The chat runtime always calls /unload before /load when the user
+        # switches models; without this guard, falling through to the
+        # Unsloth path raises and wedges the UI in termite-zig mode.
+        if get_backend_kind() == "termite-zig":
+            termite = get_termite_backend()
+            termite.unload_model()
+            logger.info("Unloaded termite-zig model: %s", request.model_path)
+            return UnloadResponse(status = "unloaded", model = request.model_path)
+
         # Check if the GGUF backend has this model loaded or is loading it
         llama_backend = get_llama_cpp_backend()
         if llama_backend.is_active and (
@@ -676,9 +745,35 @@ async def get_status(
 ):
     """
     Get current inference backend status.
-    Reports whichever backend (Unsloth or llama-server) is currently active.
+    Reports whichever backend (Unsloth, llama-server, or termite-zig)
+    is currently active according to the picker.
     """
     try:
+        # ── Backend picker: termite-zig short-circuit ──
+        if get_backend_kind() == "termite-zig":
+            termite = get_termite_backend()
+            model_id = termite.model_identifier
+            return InferenceStatusResponse(
+                active_model = model_id,
+                is_vision = False,
+                is_gguf = False,
+                gguf_variant = None,
+                is_audio = False,
+                audio_type = None,
+                has_audio_input = False,
+                loading = [],
+                loaded = [model_id] if model_id else [],
+                inference = None,
+                requires_trust_remote_code = False,
+                supports_reasoning = False,
+                reasoning_always_on = False,
+                supports_tools = False,
+                context_length = None,
+                max_context_length = None,
+                native_context_length = None,
+                speculative_type = None,
+            )
+
         llama_backend = get_llama_cpp_backend()
 
         # If a GGUF model is loaded via llama-server, report that
@@ -770,6 +865,12 @@ async def get_load_progress(
     ``ready``.
     """
     try:
+        # ── Backend picker: termite-zig has no mmap/upload phase to
+        # report in v1. Return the empty payload so the UI falls back
+        # to its generic spinner, same contract as llama.cpp pre-load.
+        if get_backend_kind() == "termite-zig":
+            return LoadProgressResponse()
+
         llama_backend = get_llama_cpp_backend()
         progress = llama_backend.load_progress()
         if progress is None:
@@ -984,9 +1085,42 @@ async def openai_chat_completions(
     Non-streaming:        returns a single ChatCompletion JSON object.
 
     Automatically routes to the correct backend:
+    - termite-zig (picker-selected) → TermiteZigBackend streaming proxy
     - GGUF models → llama-server via LlamaCppBackend
     - Other models → Unsloth/transformers via InferenceBackend
     """
+    # ── Backend picker: termite-zig short-circuit ──
+    # Delegated to a small helper so this function's diff against
+    # upstream Unsloth stays minimal. Honours payload.stream so
+    # non-streaming OpenAI-compatible clients keep getting a single
+    # ``chat.completion`` JSON object.
+    if get_backend_kind() == "termite-zig":
+        from routes.termite_chat import (
+            collect_termite_chat,
+            stream_termite_chat,
+        )
+
+        termite = get_termite_backend()
+        if payload.stream:
+            return StreamingResponse(
+                stream_termite_chat(
+                    payload = payload,
+                    request = request,
+                    termite_backend = termite,
+                ),
+                media_type = "text/event-stream",
+                headers = {
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                },
+            )
+        return await collect_termite_chat(
+            payload = payload,
+            request = request,
+            termite_backend = termite,
+        )
+
     llama_backend = get_llama_cpp_backend()
     using_gguf = llama_backend.is_loaded
 

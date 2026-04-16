@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { create } from "zustand";
 import { toast } from "sonner";
+import { create } from "zustand";
+import type { BackendKind } from "../types/api";
 import {
-  DEFAULT_INFERENCE_PARAMS,
   type ChatLoraSummary,
   type ChatModelSummary,
+  DEFAULT_INFERENCE_PARAMS,
   type InferenceParams,
 } from "../types/runtime";
 
@@ -16,6 +17,12 @@ const MAX_TOOL_CALLS_KEY = "unsloth_max_tool_calls_per_message";
 const TOOL_CALL_TIMEOUT_KEY = "unsloth_tool_call_timeout";
 const HF_TOKEN_KEY = "unsloth_hf_token";
 const INFERENCE_PARAMS_KEY = "unsloth_chat_inference_params";
+const BACKEND_KIND_KEY = "unsloth_backend_kind";
+
+function loadBackendKind(): BackendKind {
+  const raw = loadString(BACKEND_KIND_KEY, "llama-cpp");
+  return raw === "termite-zig" ? "termite-zig" : "llama-cpp";
+}
 let hasShownInferencePersistenceWarning = false;
 
 function canUseStorage(): boolean {
@@ -47,7 +54,7 @@ function loadInt(key: string, fallback: number): number {
   try {
     const raw = localStorage.getItem(key);
     if (raw === null) return fallback;
-    const parsed = parseInt(raw, 10);
+    const parsed = Number.parseInt(raw, 10);
     return Number.isNaN(parsed) ? fallback : parsed;
   } catch {
     return fallback;
@@ -100,7 +107,10 @@ function loadInferenceParams(): InferenceParams {
     if (!raw) return DEFAULT_INFERENCE_PARAMS;
     const parsed = JSON.parse(raw) as Partial<InferenceParams>;
     return {
-      temperature: asFiniteNumber(parsed.temperature, DEFAULT_INFERENCE_PARAMS.temperature),
+      temperature: asFiniteNumber(
+        parsed.temperature,
+        DEFAULT_INFERENCE_PARAMS.temperature,
+      ),
       topP: asFiniteNumber(parsed.topP, DEFAULT_INFERENCE_PARAMS.topP),
       topK: asFiniteNumber(parsed.topK, DEFAULT_INFERENCE_PARAMS.topK),
       minP: asFiniteNumber(parsed.minP, DEFAULT_INFERENCE_PARAMS.minP),
@@ -116,8 +126,14 @@ function loadInferenceParams(): InferenceParams {
         parsed.maxSeqLength,
         DEFAULT_INFERENCE_PARAMS.maxSeqLength,
       ),
-      maxTokens: asFiniteNumber(parsed.maxTokens, DEFAULT_INFERENCE_PARAMS.maxTokens),
-      systemPrompt: asString(parsed.systemPrompt, DEFAULT_INFERENCE_PARAMS.systemPrompt),
+      maxTokens: asFiniteNumber(
+        parsed.maxTokens,
+        DEFAULT_INFERENCE_PARAMS.maxTokens,
+      ),
+      systemPrompt: asString(
+        parsed.systemPrompt,
+        DEFAULT_INFERENCE_PARAMS.systemPrompt,
+      ),
       checkpoint: DEFAULT_INFERENCE_PARAMS.checkpoint,
       trustRemoteCode: asBoolean(
         parsed.trustRemoteCode,
@@ -142,6 +158,8 @@ function saveInferenceParams(params: InferenceParams): boolean {
 }
 
 type ChatRuntimeStore = {
+  backendKind: BackendKind;
+  setBackendKind: (kind: BackendKind) => void;
   params: InferenceParams;
   models: ChatModelSummary[];
   loras: ChatLoraSummary[];
@@ -212,6 +230,12 @@ type ChatRuntimeStore = {
 };
 
 export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
+  backendKind: loadBackendKind(),
+  setBackendKind: (backendKind) =>
+    set(() => {
+      saveString(BACKEND_KIND_KEY, backendKind);
+      return { backendKind };
+    }),
   params: loadInferenceParams(),
   models: [],
   loras: [],
@@ -256,8 +280,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       if (!persisted && !hasShownInferencePersistenceWarning) {
         hasShownInferencePersistenceWarning = true;
         toast.warning("Chat settings could not be persisted", {
-          description:
-            "Your changes apply now, but may reset after refresh.",
+          description: "Your changes apply now, but may reset after refresh.",
         });
       }
       return { params };
@@ -293,7 +316,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       },
       activeGgufVariant: ggufVariant ?? null,
     })),
-  setActiveThreadId: (activeThreadId) => set({ activeThreadId, contextUsage: null }),
+  setActiveThreadId: (activeThreadId) =>
+    set({ activeThreadId, contextUsage: null }),
   clearCheckpoint: () =>
     set((state) => ({
       params: {
@@ -343,7 +367,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   setKvCacheDtype: (kvCacheDtype) => set({ kvCacheDtype }),
   setSpeculativeType: (speculativeType) => set({ speculativeType }),
   setCustomContextLength: (customContextLength) => set({ customContextLength }),
-  setChatTemplateOverride: (chatTemplateOverride) => set({ chatTemplateOverride }),
+  setChatTemplateOverride: (chatTemplateOverride) =>
+    set({ chatTemplateOverride }),
   setPendingAudio: (base64, name) =>
     set({ pendingAudioBase64: base64, pendingAudioName: name }),
   clearPendingAudio: () =>
