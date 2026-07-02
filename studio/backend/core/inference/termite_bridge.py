@@ -2,17 +2,17 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """
-HF-cache → termite-zig symlink bridge.
+HF-cache → Antfly inference symlink bridge.
 
 Studio already downloads GGUFs into the HuggingFace cache
 (``~/.cache/huggingface/hub/models--<owner>--<name>/snapshots/<rev>/``).
-termite-zig has a rigid layout it won't deviate from:
+Antfly inference has a rigid model layout:
 
     <models>/generators/<owner>/<name>/<filename>.gguf
 
 Rather than force a second download through ``termite pull`` (bad UX,
 doubles disk use, duplicates HF hub rate limit), we symlink the
-HF-cached file into termite's expected layout. termite's scanner picks
+HF-cached file into Antfly inference's expected layout. Antfly inference's scanner picks
 it up as if it were a native download — no termite code changes
 required.
 
@@ -34,7 +34,7 @@ logger = get_logger(__name__)
 _SHARD_FULL_RE = re.compile(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$")
 
 # Tokenizer / config files termite needs to load a GGUF. GGUFs do embed
-# most of this metadata, but current termite-zig (v0.1.0) still reads
+# most of this metadata, but current Antfly inference still reads
 # ``tokenizer.json`` off disk and fails with ``NoTokenizerFound`` if
 # it's missing. We symlink what the HF repo has; missing files are
 # silently skipped so the bridge stays a best-effort helper.
@@ -74,9 +74,9 @@ def _try_download_aux(
     repo: str, filename: str, token: Optional[str]
 ) -> Optional[Path]:
     """Attempt to download ``filename`` from ``repo``. None on 404 / error."""
-    from huggingface_hub import hf_hub_download
-
     try:
+        from huggingface_hub import hf_hub_download
+
         return Path(hf_hub_download(repo, filename, token = token))
     except Exception as exc:  # noqa: BLE001
         logger.debug(
@@ -88,13 +88,44 @@ def _try_download_aux(
 def termite_models_dir() -> Path:
     """Resolve termite's models dir.
 
-    Honours ``TERMITE_MODELS_DIR`` (matches termite's own ``--models``
-    flag) and otherwise defaults to ``~/.termite/models``.
+    Honours ``ANTFLY_MODELS_DIR`` (matches ``antfly inference run --models-dir``)
+    and legacy ``TERMITE_MODELS_DIR``. Defaults to
+    ``~/.antfly/inference/models``.
     """
-    override = os.environ.get("TERMITE_MODELS_DIR")
+    override = os.environ.get("ANTFLY_MODELS_DIR") or os.environ.get("TERMITE_MODELS_DIR")
     if override:
         return Path(override)
-    return Path.home() / ".termite" / "models"
+    return Path.home() / ".antfly" / "inference" / "models"
+
+
+def _all_hf_cache_scans():
+    """Return scan_cache_dir results for HF cache roots Studio may use."""
+
+    from huggingface_hub import scan_cache_dir
+
+    scans = [scan_cache_dir()]
+    seen: set[str] = set()
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+
+        seen.add(str(Path(HF_HUB_CACHE).resolve()))
+    except Exception:
+        pass
+
+    try:
+        from utils.paths import legacy_hf_cache_dir, hf_default_cache_dir
+    except Exception:
+        return scans
+
+    for extra_fn in (legacy_hf_cache_dir, hf_default_cache_dir):
+        try:
+            extra = extra_fn()
+            if extra.is_dir() and str(extra.resolve()) not in seen:
+                seen.add(str(extra.resolve()))
+                scans.append(scan_cache_dir(cache_dir = str(extra)))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("termite bridge: could not scan HF cache %s: %s", extra_fn, exc)
+    return scans
 
 
 def _symlink_idempotent(target: Path, link_path: Path) -> None:
@@ -125,6 +156,91 @@ def _symlink_idempotent(target: Path, link_path: Path) -> None:
 
     link_path.parent.mkdir(parents = True, exist_ok = True)
     link_path.symlink_to(target_resolved)
+
+
+def _cache_file_path(cache_file) -> Optional[Path]:
+    """Extract a usable local path from a huggingface_hub CachedFileInfo."""
+
+    for attr in ("file_path", "blob_path"):
+        value = getattr(cache_file, attr, None)
+        if value:
+            path = Path(value)
+            if path.exists() or path.is_symlink():
+                return path
+    return None
+
+
+def bridge_hf_cache_to_termite(
+    *, models_dir: Optional[Path] = None, hf_token: Optional[str] = None
+) -> list[str]:
+    """Expose already-downloaded HF GGUF repos in Antfly's model layout.
+
+    This is the mirror of the Antfly-cache scanner used by Studio's model
+    picker. If a user downloads a GGUF through llama.cpp/Hugging Face, Antfly
+    should see the same file without a second download. This function is
+    only bridges repos that already have local GGUFs. It may fetch tiny
+    tokenizer/config sidecars so Antfly's loadability checks can recognize
+    the bridged directory, but it never re-downloads model weights.
+
+    Returns repo ids for which at least one GGUF symlink exists.
+    """
+
+    dest_root = models_dir or termite_models_dir()
+    bridged: set[str] = set()
+
+    for hf_cache in _all_hf_cache_scans():
+        for repo_info in getattr(hf_cache, "repos", []):
+            if getattr(repo_info, "repo_type", None) != "model":
+                continue
+            repo_id = getattr(repo_info, "repo_id", "")
+            if not repo_id or not repo_id.upper().endswith("-GGUF"):
+                continue
+
+            dest_dir = dest_root / "generators" / repo_id
+            linked_gguf = False
+            linked_aux: set[str] = set()
+            for revision in getattr(repo_info, "revisions", []):
+                for cache_file in getattr(revision, "files", []):
+                    file_name = getattr(cache_file, "file_name", "")
+                    base_name = Path(file_name).name
+                    if not base_name:
+                        continue
+                    is_gguf = base_name.endswith(".gguf")
+                    is_aux = base_name in _TOKENIZER_AUXILIARY_FILES
+                    if not is_gguf and not is_aux:
+                        continue
+
+                    local_path = _cache_file_path(cache_file)
+                    if local_path is None:
+                        continue
+                    _symlink_idempotent(local_path, dest_dir / base_name)
+                    linked_gguf = linked_gguf or is_gguf
+                    if is_aux:
+                        linked_aux.add(base_name)
+
+            if linked_gguf:
+                # HF GGUF repos often cache only the selected .gguf. Antfly's
+                # server-side listing filters out directories that cannot load
+                # a config/manifest, so fetch tiny tokenizer/config sidecars
+                # from the GGUF repo or its likely base repo when missing.
+                for filename in _TOKENIZER_AUXILIARY_FILES:
+                    if filename in linked_aux or (dest_dir / filename).exists():
+                        continue
+                    for candidate in _candidate_base_repos(repo_id):
+                        aux_path = _try_download_aux(candidate, filename, hf_token)
+                        if aux_path is not None:
+                            _symlink_idempotent(aux_path, dest_dir / filename)
+                            linked_aux.add(filename)
+                            break
+                bridged.add(repo_id)
+
+    if bridged:
+        logger.info(
+            "termite bridge: exposed %d HF-cached GGUF repos under %s",
+            len(bridged),
+            dest_root,
+        )
+    return sorted(bridged)
 
 
 def _pick_variant_match(
@@ -224,6 +340,6 @@ def bridge_gguf_to_termite(
         aux_count,
         dest_dir,
     )
-    # termite's discovery enumerates ``generators/<owner>/<name>`` and
+    # Antfly inference discovery enumerates ``generators/<owner>/<name>`` and
     # exposes that 2-level key as the model id.
     return hf_repo

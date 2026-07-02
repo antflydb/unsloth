@@ -17,6 +17,7 @@ from __future__ import annotations
 import sys
 import types as _types
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -340,3 +341,166 @@ def test_bridge_raises_when_variant_not_in_repo(tmp_path, monkeypatch):
             hf_variant = "IQ2_XXS",
             models_dir = tmp_path / "termite_models",
         )
+
+
+def test_bridge_hf_cache_to_termite_exposes_cached_gguf_repo(tmp_path, monkeypatch):
+    bridge = _load_bridge_module()
+
+    snapshot = (
+        tmp_path
+        / "hf_cache"
+        / "models--unsloth--Gemma-GGUF"
+        / "snapshots"
+        / "rev"
+    )
+    snapshot.mkdir(parents = True)
+    gguf = snapshot / "Gemma-Q4_K_M.gguf"
+    gguf.write_bytes(b"gguf")
+    tokenizer = snapshot / "tokenizer.json"
+    tokenizer.write_text("{}")
+    ignored = snapshot / "README.md"
+    ignored.write_text("ignore")
+
+    hf = _types.ModuleType("huggingface_hub")
+    hf.scan_cache_dir = lambda cache_dir = None: SimpleNamespace(
+        repos = [
+            SimpleNamespace(
+                repo_type = "model",
+                repo_id = "unsloth/Gemma-GGUF",
+                revisions = [
+                    SimpleNamespace(
+                        files = [
+                            SimpleNamespace(
+                                file_name = "Gemma-Q4_K_M.gguf",
+                                file_path = gguf,
+                            ),
+                            SimpleNamespace(
+                                file_name = "tokenizer.json",
+                                file_path = tokenizer,
+                            ),
+                            SimpleNamespace(
+                                file_name = "README.md",
+                                file_path = ignored,
+                            ),
+                        ]
+                    )
+                ],
+            )
+        ]
+    )
+    monkeypatch.setitem(sys.modules, "huggingface_hub", hf)
+
+    models_dir = tmp_path / "termite_models"
+    bridged = bridge.bridge_hf_cache_to_termite(models_dir = models_dir)
+
+    assert bridged == ["unsloth/Gemma-GGUF"]
+    dest = models_dir / "generators" / "unsloth" / "Gemma-GGUF"
+    assert (dest / "Gemma-Q4_K_M.gguf").is_symlink()
+    assert (dest / "Gemma-Q4_K_M.gguf").resolve() == gguf.resolve()
+    assert (dest / "tokenizer.json").is_symlink()
+    assert (dest / "tokenizer.json").resolve() == tokenizer.resolve()
+    assert not (dest / "README.md").exists()
+
+
+def test_bridge_hf_cache_to_termite_ignores_non_gguf_repos(tmp_path, monkeypatch):
+    bridge = _load_bridge_module()
+
+    snapshot = (
+        tmp_path
+        / "hf_cache"
+        / "models--unsloth--Gemma"
+        / "snapshots"
+        / "rev"
+    )
+    snapshot.mkdir(parents = True)
+    weights = snapshot / "model.safetensors"
+    weights.write_bytes(b"weights")
+
+    hf = _types.ModuleType("huggingface_hub")
+    hf.scan_cache_dir = lambda cache_dir = None: SimpleNamespace(
+        repos = [
+            SimpleNamespace(
+                repo_type = "model",
+                repo_id = "unsloth/Gemma",
+                revisions = [
+                    SimpleNamespace(
+                        files = [
+                            SimpleNamespace(
+                                file_name = "model.safetensors",
+                                file_path = weights,
+                            )
+                        ]
+                    )
+                ],
+            )
+        ]
+    )
+    monkeypatch.setitem(sys.modules, "huggingface_hub", hf)
+
+    models_dir = tmp_path / "termite_models"
+    assert bridge.bridge_hf_cache_to_termite(models_dir = models_dir) == []
+    assert not (models_dir / "generators").exists()
+
+
+def test_bridge_hf_cache_to_termite_fetches_missing_aux_from_base_repo(
+    tmp_path,
+    monkeypatch,
+):
+    bridge = _load_bridge_module()
+
+    snapshot = (
+        tmp_path
+        / "hf_cache"
+        / "models--unsloth--Gemma-GGUF"
+        / "snapshots"
+        / "rev"
+    )
+    snapshot.mkdir(parents = True)
+    gguf = snapshot / "Gemma-Q4_K_M.gguf"
+    gguf.write_bytes(b"gguf")
+
+    base_snapshot = tmp_path / "hf_cache" / "models--unsloth--Gemma" / "snapshots" / "rev"
+    base_snapshot.mkdir(parents = True)
+    tokenizer = base_snapshot / "tokenizer.json"
+    tokenizer.write_text("{}")
+    config = base_snapshot / "config.json"
+    config.write_text("{}")
+
+    hf = _types.ModuleType("huggingface_hub")
+    hf.scan_cache_dir = lambda cache_dir = None: SimpleNamespace(
+        repos = [
+            SimpleNamespace(
+                repo_type = "model",
+                repo_id = "unsloth/Gemma-GGUF",
+                revisions = [
+                    SimpleNamespace(
+                        files = [
+                            SimpleNamespace(
+                                file_name = "Gemma-Q4_K_M.gguf",
+                                file_path = gguf,
+                            ),
+                        ]
+                    )
+                ],
+            )
+        ]
+    )
+
+    def _fake_download(repo, filename, token = None):
+        if repo == "unsloth/Gemma" and filename == "tokenizer.json":
+            return str(tokenizer)
+        if repo == "unsloth/Gemma" and filename == "config.json":
+            return str(config)
+        raise FileNotFoundError(filename)
+
+    hf.hf_hub_download = _fake_download
+    monkeypatch.setitem(sys.modules, "huggingface_hub", hf)
+
+    models_dir = tmp_path / "termite_models"
+    bridged = bridge.bridge_hf_cache_to_termite(models_dir = models_dir)
+
+    assert bridged == ["unsloth/Gemma-GGUF"]
+    dest = models_dir / "generators" / "unsloth" / "Gemma-GGUF"
+    assert (dest / "Gemma-Q4_K_M.gguf").is_symlink()
+    assert (dest / "tokenizer.json").resolve() == tokenizer.resolve()
+    assert (dest / "config.json").resolve() == config.resolve()

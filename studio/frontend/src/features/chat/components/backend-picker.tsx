@@ -16,11 +16,11 @@ import type { BackendKind, BackendVersionInfo } from "../types/api";
 
 /**
  * Unobtrusive inference-engine picker. Default is ``llama-cpp`` (the
- * existing GGUF flow); ``termite-zig`` routes chat through the Zig
- * server in ./termite-zig for dogfooding.
+ * existing GGUF flow); ``termite-zig`` (legacy internal value) routes chat through
+ * Antfly inference for dogfooding.
  *
- * When termite-zig is selected, the component also surfaces the
- * termite build's version + enabled backends (e.g. native / mlx / onnx)
+ * When Antfly inference is selected, the component also surfaces the
+ * Antfly build's version + enabled backends (e.g. native / mlx / onnx)
  * so the user can tell at a glance which build is serving requests.
  *
  * Disabled while a model is loading to avoid the user flipping the
@@ -59,8 +59,8 @@ export function BackendPicker() {
     };
   }, []);
 
-  // Fetch termite version whenever the picker flips to termite-zig.
-  // Keeps the subline ("termite-zig v0.1.0 · native, mlx") accurate
+  // Fetch Antfly version whenever the picker flips to Antfly inference.
+  // Keeps the subline ("antfly-inference dev · native, onnx") accurate
   // without requiring a full page refresh.
   useEffect(() => {
     if (backendKind !== "termite-zig") {
@@ -98,7 +98,7 @@ export function BackendPicker() {
       // checkpoint so the model picker repopulates from the new source.
       clearCheckpoint();
       if (nextKind === "termite-zig") {
-        toast.info("Inference engine: termite-zig", {
+        toast.info("Inference engine: Antfly inference", {
           description: result.unloaded
             ? `Unloaded ${result.unloaded}. Pick a model to continue.`
             : "Pick a model to continue.",
@@ -145,7 +145,7 @@ export function BackendPicker() {
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="llama-cpp">llama.cpp</SelectItem>
-            <SelectItem value="termite-zig">termite-zig</SelectItem>
+            <SelectItem value="termite-zig">Antfly</SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -166,9 +166,9 @@ function formatVersionLine(
   info: BackendVersionInfo | null,
 ): string | null {
   if (kind !== "termite-zig") return null;
-  if (!info) return "termite-zig · version unavailable";
+  if (!info) return "Antfly inference · version unavailable";
   const version = info.version ?? "unknown";
-  const runtime = info.runtime ?? "termite-zig";
+  const runtime = info.runtime ?? "antfly-inference";
   const enabledBackends = info.backends
     ? Object.entries(info.backends)
         .filter(([, enabled]) => enabled)

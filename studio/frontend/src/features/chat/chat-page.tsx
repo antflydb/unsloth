@@ -45,7 +45,7 @@ import {
   useState,
 } from "react";
 import { toast } from "sonner";
-import { listLocalModels } from "./api/chat-api";
+import { getBackend, listLocalModels } from "./api/chat-api";
 import { ChatSettingsPanel } from "./chat-settings-sheet";
 import { ContextUsageBar } from "./components/context-usage-bar";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
@@ -741,6 +741,23 @@ export function ChatPage(): ReactElement {
   }, [lorasFromStore, localModels]);
 
   const backendKind = useChatRuntimeStore((state) => state.backendKind);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const result = await getBackend();
+        if (!cancelled) {
+          useChatRuntimeStore.getState().setBackendKind(result.backend);
+        }
+      } catch {
+        // Non-fatal: keep the last locally persisted value if the probe fails.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   useEffect(() => {
     if (getTrainingCompareHandoff()) return;
     void refresh();

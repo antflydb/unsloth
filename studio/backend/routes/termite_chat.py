@@ -58,8 +58,14 @@ async def stream_termite_chat(
     created = int(time.time())
     cancel_event = threading.Event()
 
-    # Role preamble — matches the llama.cpp SSE stream so the frontend
-    # adapter doesn't need to special-case termite.
+    # Delay the role preamble until we have the first content token.
+    #
+    # Why: if termite errors before producing any text (for example
+    # MEMORY_BUDGET_EXCEEDED / SERVICE_UNAVAILABLE on the first decode
+    # step), yielding a role-only chunk here commits the 200/SSE response
+    # too early. The frontend then sees an empty assistant turn instead of
+    # a real request failure. Waiting until the first content delta keeps
+    # those early failures visible to the caller.
     role_chunk = {
         "id": completion_id,
         "object": "chat.completion.chunk",
@@ -69,7 +75,7 @@ async def stream_termite_chat(
             {"index": 0, "delta": {"role": "assistant"}, "finish_reason": None},
         ],
     }
-    yield f"data: {json.dumps(role_chunk)}\n\n"
+    sent_role = False
 
     # Coerce messages into plain dicts — the termite backend accepts
     # whatever dict shape the caller hands over.
@@ -112,6 +118,10 @@ async def stream_termite_chat(
             prev_text = cumulative
             if not new_text:
                 continue
+
+            if not sent_role:
+                yield f"data: {json.dumps(role_chunk)}\n\n"
+                sent_role = True
 
             delta_chunk = {
                 "id": completion_id,

@@ -232,6 +232,16 @@ def _graceful_shutdown(server = None):
     except Exception as e:
         logger.warning("Error shutting down llama-server: %s", e)
 
+    # 6. Clean up Antfly inference subprocess (if instantiated)
+    try:
+        from core.inference import backend_state
+
+        termite_backend = getattr(backend_state, "_termite_backend", None)
+        if termite_backend is not None:
+            termite_backend._cleanup()
+    except Exception as e:
+        logger.warning("Error shutting down Antfly inference subprocess: %s", e)
+
     logger.info("All subprocesses cleaned up")
 
 

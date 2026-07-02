@@ -6,6 +6,7 @@ import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
 import { toast } from "sonner";
 import {
   generateAudio,
+  getBackend,
   listCachedGguf,
   listCachedModels,
   listGgufVariants,
@@ -46,6 +47,42 @@ type RunMessage = RunMessages[number];
 
 /** Tracks which user messages were sent with an audio file (messageId → filename). */
 export const sentAudioNames = new Map<string, string>();
+
+function effectiveMaxTokensForBackend(
+  backendKind: ReturnType<typeof useChatRuntimeStore.getState>["backendKind"],
+  maxTokens: number,
+  maxSeqLength: number,
+): number {
+  if (backendKind !== "termite-zig") {
+    return maxTokens;
+  }
+  // termite currently reserves KV/cache budget directly from max_tokens.
+  // The Studio default (8192) is high enough to trip small-model memory
+  // budgets before the first token, which then looked like a blank
+  // assistant turn in the UI. Clamp termite requests to a conservative
+  // ceiling for now; users can still raise it later once the backend has
+  // better budget-aware defaults.
+  return Math.max(1, Math.min(maxTokens, maxSeqLength, 1024));
+}
+
+async function syncBackendKindWithServer(): Promise<void> {
+  try {
+    const server = await getBackend();
+    const store = useChatRuntimeStore.getState();
+    if (store.backendKind === server.backend) {
+      return;
+    }
+    store.setBackendKind(server.backend);
+    toast.info("Inference engine updated", {
+      description:
+        server.backend === "termite-zig"
+          ? "Server is using Antfly inference."
+          : "Server is using llama.cpp.",
+    });
+  } catch {
+    // Non-fatal: if the server probe fails, keep the current client-side view.
+  }
+}
 
 /**
  * Match error messages that indicate the request filled or would fill
@@ -535,6 +572,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
   return {
     async *run({ messages, abortSignal, unstable_threadId }) {
       let runtime = useChatRuntimeStore.getState();
+      await syncBackendKindWithServer();
+      runtime = useChatRuntimeStore.getState();
       // Capture the thread ID once at the start so it stays stable even if
       // the user switches chats while waiting for model load / auto-load.
       const resolvedThreadId =
@@ -573,6 +612,11 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         toolsEnabled,
         codeToolsEnabled,
       } = runtime;
+      const effectiveMaxTokens = effectiveMaxTokensForBackend(
+        runtime.backendKind,
+        params.maxTokens,
+        params.maxSeqLength,
+      );
 
       const outboundMessages = messages
         .map(toOpenAIMessage)
@@ -620,7 +664,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               stream: false,
               temperature: params.temperature,
               top_p: params.topP,
-              max_tokens: params.maxTokens,
+              max_tokens: effectiveMaxTokens,
               top_k: params.topK,
               min_p: params.minP,
               repetition_penalty: params.repetitionPenalty,
@@ -704,7 +748,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             stream: true,
             temperature: params.temperature,
             top_p: params.topP,
-            max_tokens: params.maxTokens,
+            max_tokens: effectiveMaxTokens,
             top_k: params.topK,
             min_p: params.minP,
             repetition_penalty: params.repetitionPenalty,

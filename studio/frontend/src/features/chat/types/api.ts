@@ -4,8 +4,8 @@
 /**
  * Inference engine selected by the chat picker.
  * "llama-cpp" preserves the original flow (GGUF via llama-server);
- * "termite-zig" routes chat through the Zig implementation under
- * ./termite-zig for dogfooding.
+ * "termite-zig" is the legacy internal value for routing chat through
+ * Antfly inference.
  */
 export type BackendKind = "llama-cpp" | "termite-zig";
 
@@ -24,8 +24,8 @@ export interface GetBackendResponse {
 }
 
 /**
- * Build info reported by a non-llama.cpp backend (today: termite-zig).
- * Shape mirrors what the termite server returns at /ml/v1/version so
+ * Build info reported by a non-llama.cpp backend (today: Antfly inference).
+ * Shape mirrors what the Antfly server returns so
  * the frontend can show it verbatim without a translation layer.
  */
 export interface BackendVersionInfo {

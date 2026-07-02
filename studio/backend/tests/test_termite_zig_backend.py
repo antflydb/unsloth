@@ -5,12 +5,12 @@
 
 Pure unit tests. No real subprocess, no real HTTP. Verifies:
 
-  * Binary discovery honours ``TERMITE_BIN`` → repo-relative path →
-    ``~/.unsloth/termite/bin/termite`` → ``$PATH``.
-  * ``TERMITE_ZIG_URL`` short-circuits spawn entirely (the user points
+  * Binary discovery honours ``ANTFLY_BIN`` / explicit legacy ``TERMITE_BIN``
+    → repo-relative path → ``~/.unsloth/antfly/bin/antfly`` → ``$PATH``.
+  * ``ANTFLY_INFERENCE_URL`` short-circuits spawn entirely (the user points
     at an externally-managed termite instance, e.g. one they launched
     under a debugger).
-  * ``list_models()`` proxies ``GET /ml/v1/models`` and maps the
+  * ``list_models()`` proxies ``GET /ai/v1/models`` and maps the
     OpenAI-style entries into the ``LocalModelInfo`` shape the rest
     of Studio expects.
   * ``generate_chat_completion()`` parses SSE chunks from the termite
@@ -65,25 +65,40 @@ def _load_termite_zig_module():
 
 def test_find_termite_binary_from_env(tmp_path, monkeypatch):
     termite_zig = _load_termite_zig_module()
-    fake_bin = tmp_path / "termite"
+    fake_bin = tmp_path / "antfly"
     fake_bin.write_text("#!/bin/sh\nexit 0\n")
     fake_bin.chmod(0o755)
 
+    monkeypatch.setenv("ANTFLY_BIN", str(fake_bin))
+
+    assert termite_zig.TermiteZigBackend._find_termite_binary() == str(fake_bin)
+
+
+
+
+def test_find_antfly_binary_from_legacy_env(tmp_path, monkeypatch):
+    termite_zig = _load_termite_zig_module()
+    fake_bin = tmp_path / "antfly"
+    fake_bin.write_text("#!/bin/sh\nexit 0\n")
+    fake_bin.chmod(0o755)
+
+    monkeypatch.delenv("ANTFLY_BIN", raising = False)
     monkeypatch.setenv("TERMITE_BIN", str(fake_bin))
 
     assert termite_zig.TermiteZigBackend._find_termite_binary() == str(fake_bin)
 
 
 def test_find_termite_binary_falls_back_to_repo_path(tmp_path, monkeypatch):
-    """When TERMITE_BIN is unset, the repo-relative dev build wins."""
+    """When ANTFLY_BIN is unset, the repo-relative dev build wins."""
     termite_zig = _load_termite_zig_module()
 
-    # Simulate a clean env with no TERMITE_BIN.
+    # Simulate a clean env with no ANTFLY_BIN / TERMITE_BIN.
+    monkeypatch.delenv("ANTFLY_BIN", raising = False)
     monkeypatch.delenv("TERMITE_BIN", raising = False)
 
-    # Create a fake repo layout: repo_root/termite-zig/zig-out/bin/termite
+    # Create a fake repo layout: repo_root/antfly/zig/zig-out/bin/antfly
     fake_repo = tmp_path / "repo"
-    fake_bin = fake_repo / "termite-zig" / "zig-out" / "bin" / "termite"
+    fake_bin = fake_repo / "antfly" / "zig" / "zig-out" / "bin" / "antfly"
     fake_bin.parent.mkdir(parents = True)
     fake_bin.write_text("#!/bin/sh\n")
     fake_bin.chmod(0o755)
@@ -97,8 +112,9 @@ def test_find_termite_binary_falls_back_to_repo_path(tmp_path, monkeypatch):
 def test_find_termite_binary_returns_none_when_nothing_found(tmp_path, monkeypatch):
     termite_zig = _load_termite_zig_module()
 
+    monkeypatch.delenv("ANTFLY_BIN", raising = False)
     monkeypatch.delenv("TERMITE_BIN", raising = False)
-    monkeypatch.setenv("HOME", str(tmp_path))  # no ~/.unsloth/termite/bin/termite
+    monkeypatch.setenv("HOME", str(tmp_path))  # no ~/.unsloth/antfly/bin/antfly
     monkeypatch.setattr(termite_zig, "_REPO_ROOT", str(tmp_path / "nope"))
     # Scrub PATH so ``shutil.which`` can't find a system termite.
     monkeypatch.setenv("PATH", str(tmp_path / "empty"))
@@ -112,7 +128,7 @@ def test_find_termite_binary_returns_none_when_nothing_found(tmp_path, monkeypat
 
 
 def test_ensure_running_short_circuits_on_termite_zig_url(monkeypatch):
-    """With TERMITE_ZIG_URL set, no subprocess is spawned.
+    """With ANTFLY_INFERENCE_URL set, no subprocess is spawned.
 
     The override is the debug / bring-your-own-termite path. The
     backend should probe readiness at the supplied URL and never
@@ -120,7 +136,7 @@ def test_ensure_running_short_circuits_on_termite_zig_url(monkeypatch):
     """
     termite_zig = _load_termite_zig_module()
 
-    monkeypatch.setenv("TERMITE_ZIG_URL", "http://127.0.0.1:9999")
+    monkeypatch.setenv("ANTFLY_INFERENCE_URL", "http://127.0.0.1:9999")
 
     popen_calls: list[tuple] = []
 
@@ -142,7 +158,7 @@ def test_ensure_running_short_circuits_on_termite_zig_url(monkeypatch):
 
     # Track the URL ``_wait_until_ready`` polls — regression test for
     # the real-world bug where we probed ``/readyz`` at the root, which
-    # termite-zig 404s (it serves health endpoints under /ml/v1/).
+    # Antfly inference serves health endpoints at the root.
     probed_urls: list[str] = []
 
     def _record_get(url, timeout = None):
@@ -158,13 +174,13 @@ def test_ensure_running_short_circuits_on_termite_zig_url(monkeypatch):
     assert backend.base_url == "http://127.0.0.1:9999"
     assert backend._process is None
     assert probed_urls, "expected at least one health probe"
-    assert probed_urls[0].endswith("/ml/v1/healthz"), probed_urls
+    assert probed_urls[0].endswith("/healthz"), probed_urls
 
 
 def test_version_returns_termite_build_info(monkeypatch):
     termite_zig = _load_termite_zig_module()
 
-    monkeypatch.setenv("TERMITE_ZIG_URL", "http://127.0.0.1:9999")
+    monkeypatch.setenv("ANTFLY_INFERENCE_URL", "http://127.0.0.1:9999")
 
     class _FakeResp:
         status_code = 200
@@ -186,7 +202,7 @@ def test_version_returns_termite_build_info(monkeypatch):
     }
 
     def _fake_get(url, timeout = None):
-        if url.endswith("/ml/v1/version"):
+        if url.endswith("/ai/v1/version"):
             return _FakeResp(expected)
         # readyz / healthz probes
         return _FakeResp({"status": "ok"})
@@ -205,7 +221,7 @@ def test_ensure_running_url_override_retries_until_ready(monkeypatch):
     """
     termite_zig = _load_termite_zig_module()
 
-    monkeypatch.setenv("TERMITE_ZIG_URL", "http://127.0.0.1:9999")
+    monkeypatch.setenv("ANTFLY_INFERENCE_URL", "http://127.0.0.1:9999")
 
     class _ConnectError(Exception):
         pass
@@ -233,7 +249,7 @@ def test_ensure_running_url_override_retries_until_ready(monkeypatch):
 def test_list_models_maps_openai_shape(monkeypatch):
     termite_zig = _load_termite_zig_module()
 
-    monkeypatch.setenv("TERMITE_ZIG_URL", "http://127.0.0.1:9999")
+    monkeypatch.setenv("ANTFLY_INFERENCE_URL", "http://127.0.0.1:9999")
 
     class _FakeResp:
         status_code = 200
@@ -284,7 +300,7 @@ def test_generate_chat_completion_streams_cumulative_text(monkeypatch):
     """Fake an SSE stream of OpenAI chunks; assert cumulative yields."""
     termite_zig = _load_termite_zig_module()
 
-    monkeypatch.setenv("TERMITE_ZIG_URL", "http://127.0.0.1:9999")
+    monkeypatch.setenv("ANTFLY_INFERENCE_URL", "http://127.0.0.1:9999")
 
     sse_lines = [
         b'data: {"choices":[{"delta":{"content":"Hel"}}]}\n\n',
@@ -354,3 +370,125 @@ def test_generate_chat_completion_streams_cumulative_text(monkeypatch):
     # Monotonic growth.
     for a, b in zip(text_yields, text_yields[1:]):
         assert b.startswith(a)
+
+
+def test_generate_chat_completion_recovers_after_stale_healthy_backend(monkeypatch):
+    """If termite dies after becoming healthy, the backend should recover.
+
+    Regression test for the browser-visible failure where the picker still
+    shows ``termite-zig`` but chat crashes with ``httpx.ConnectError:
+    [Errno 61] Connection refused`` because the cached backend singleton
+    thinks termite is healthy even though the subprocess is gone.
+    """
+    termite_zig = _load_termite_zig_module()
+
+    monkeypatch.delenv("ANTFLY_INFERENCE_URL", raising = False)
+    monkeypatch.delenv("TERMITE_ZIG_URL", raising = False)
+    monkeypatch.setattr(termite_zig, "_find_free_port", lambda: 9998)
+
+    class _FakeProcess:
+        def __init__(self, alive = True):
+            self._alive = alive
+
+        def poll(self):
+            return None if self._alive else 1
+
+        def terminate(self):
+            self._alive = False
+
+        def wait(self, timeout = None):
+            self._alive = False
+            return 0
+
+    spawned: list[_FakeProcess] = []
+
+    def _fake_popen(*args, **kwargs):
+        proc = _FakeProcess(alive = True)
+        spawned.append(proc)
+        return proc
+
+    monkeypatch.setattr(termite_zig.subprocess, "Popen", _fake_popen)
+
+    class _FakeResp:
+        status_code = 200
+
+        def json(self):
+            return {"status": "ok"}
+
+        def raise_for_status(self):
+            return None
+
+    health_calls: list[str] = []
+
+    def _fake_get(url, timeout = None):
+        health_calls.append(url)
+        return _FakeResp()
+
+    monkeypatch.setattr(termite_zig.httpx, "get", _fake_get)
+
+    class _ConnectError(Exception):
+        pass
+
+    termite_zig.httpx.ConnectError = _ConnectError  # type: ignore[attr-defined]
+
+    sse_lines = [
+        b'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n',
+        b"data: [DONE]\n\n",
+    ]
+
+    class _FakeStreamResponse:
+        status_code = 200
+
+        def iter_lines(self):
+            for line in sse_lines:
+                yield line.decode("utf-8").rstrip("\n")
+
+    class _FakeCtx:
+        def __init__(self, resp):
+            self._resp = resp
+
+        def __enter__(self):
+            return self._resp
+
+        def __exit__(self, *a):
+            return None
+
+    stream_attempts = {"count": 0}
+
+    class _FakeClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return None
+
+        def stream(self, method, url, json = None, headers = None):
+            stream_attempts["count"] += 1
+            if stream_attempts["count"] == 1:
+                raise _ConnectError("refused")
+            return _FakeCtx(_FakeStreamResponse())
+
+    monkeypatch.setattr(termite_zig.httpx, "Client", _FakeClient)
+
+    backend = termite_zig.TermiteZigBackend()
+    backend._ensure_running()
+    backend._model_identifier = "unsloth/Llama-3.2-1B-Instruct-GGUF"
+
+    # Simulate termite dying after the initial successful readiness probe.
+    assert spawned, "expected initial termite spawn"
+    spawned[0]._alive = False
+
+    chunks = list(
+        backend.generate_chat_completion(
+            messages = [{"role": "user", "content": "hello"}],
+            max_tokens = 8,
+        )
+    )
+
+    assert chunks[-1] == "Hi"
+    assert stream_attempts["count"] == 2
+    assert len(spawned) == 3, "expected one preflight respawn and one retry respawn"
+    assert any(url.endswith("/healthz") for url in health_calls)

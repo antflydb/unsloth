@@ -140,6 +140,148 @@ def _resolve_hf_cache_dir() -> Path:
         return Path.home() / ".cache" / "huggingface" / "hub"
 
 
+def _resolve_antfly_models_dir() -> Path:
+    """Resolve the Antfly inference model cache root.
+
+    Antfly downloads GGUFs into its own cache instead of the Hugging Face
+    cache. Studio's llama.cpp backend can still load those GGUF files, so the
+    model picker should treat matching Antfly cache entries as downloaded.
+    """
+
+    override = os.environ.get("ANTFLY_MODELS_DIR") or os.environ.get(
+        "TERMITE_MODELS_DIR"
+    )
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".antfly" / "inference" / "models"
+
+
+def _antfly_models_dirs_to_scan() -> list[Path]:
+    """Model cache roots that may contain Antfly-managed GGUFs."""
+
+    override = os.environ.get("ANTFLY_MODELS_DIR") or os.environ.get(
+        "TERMITE_MODELS_DIR"
+    )
+    if override:
+        return [Path(override).expanduser()]
+
+    roots = [
+        Path.home() / ".antfly" / "inference" / "models",
+        # Historical Termite/Antfly downloads are still useful to the
+        # llama.cpp backend and should remain visible in the picker.
+        Path.home() / ".termite" / "models",
+    ]
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for root in roots:
+        key = str(root)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(root)
+    return unique
+
+
+def _iter_antfly_gguf_repo_dirs() -> list[tuple[str, Path]]:
+    """Return ``(repo_id, directory)`` pairs for GGUF repos in Antfly cache.
+
+    Current Antfly generator models live under
+    ``~/.antfly/inference/models/generators/<owner>/<repo>``. Some older or
+    non-generator downloads are laid out as ``<owner>/<repo>`` directly under
+    the models root, so scan both shapes.
+    """
+
+    found: list[tuple[str, Path]] = []
+    seen: set[str] = set()
+
+    for root in _antfly_models_dirs_to_scan():
+        candidates = [root / "generators", root]
+        for base in candidates:
+            try:
+                if not base.is_dir():
+                    continue
+                for owner_dir in base.iterdir():
+                    if not owner_dir.is_dir() or owner_dir.name.startswith("."):
+                        continue
+                    # Avoid treating the generator category itself as an owner
+                    # when scanning the root shape.
+                    if base == root and owner_dir.name == "generators":
+                        continue
+                    for repo_dir in owner_dir.iterdir():
+                        if not repo_dir.is_dir() or repo_dir.name.startswith("."):
+                            continue
+                        repo_id = f"{owner_dir.name}/{repo_dir.name}"
+                        key = f"{repo_id.lower()}\0{repo_dir.resolve()}"
+                        if key in seen:
+                            continue
+                        try:
+                            if not any(f.is_file() for f in repo_dir.rglob("*.gguf")):
+                                continue
+                        except OSError:
+                            continue
+                        seen.add(key)
+                        found.append((repo_id, repo_dir))
+            except OSError:
+                continue
+    return found
+
+
+def _antfly_gguf_files_for_repo(repo_id: str) -> list[Path]:
+    """Find Antfly-cached GGUF files for *repo_id* case-insensitively."""
+
+    target = repo_id.lower()
+    files: list[Path] = []
+    for candidate_repo_id, repo_dir in _iter_antfly_gguf_repo_dirs():
+        if candidate_repo_id.lower() != target:
+            continue
+        try:
+            files.extend(f for f in repo_dir.rglob("*.gguf") if f.is_file())
+        except OSError:
+            continue
+    return files
+
+
+def _antfly_cached_bytes_by_quant(repo_id: str) -> dict[str, int]:
+    """Sum Antfly-cached GGUF bytes by quantization label for *repo_id*."""
+
+    cached: dict[str, int] = {}
+    for f in _antfly_gguf_files_for_repo(repo_id):
+        try:
+            q = _extract_quant_label(f.name)
+            cached[q] = cached.get(q, 0) + f.stat().st_size
+        except OSError:
+            continue
+    return cached
+
+
+def _iter_antfly_cached_gguf_repos() -> list[dict]:
+    """Return Antfly GGUF repos in the same shape as ``/cached-gguf``."""
+
+    cached: list[dict] = []
+    for repo_id, repo_dir in _iter_antfly_gguf_repo_dirs():
+        # Keep parity with the HF cache endpoint: only surface model repos
+        # whose repo id conventionally denotes a GGUF repo.
+        if not repo_id.upper().endswith("-GGUF"):
+            continue
+        total_size = 0
+        try:
+            for f in repo_dir.rglob("*.gguf"):
+                if f.is_file():
+                    total_size += f.stat().st_size
+        except OSError:
+            continue
+        if total_size <= 0:
+            continue
+        cached.append(
+            {
+                "repo_id": repo_id,
+                "size_bytes": total_size,
+                "cache_path": str(repo_dir),
+            }
+        )
+    return cached
+
+
 def _is_model_directory(d: Path) -> bool:
     """Return ``True`` when *d* looks like a model directory.
 
@@ -1007,6 +1149,12 @@ async def get_gguf_variants(
         except Exception:
             pass
 
+        try:
+            for q, size in _antfly_cached_bytes_by_quant(repo_id).items():
+                cached_bytes_by_quant[q] = cached_bytes_by_quant.get(q, 0) + size
+        except Exception:
+            pass
+
         def _is_fully_downloaded(variant) -> bool:
             cached = cached_bytes_by_quant.get(variant.quant, 0)
             if cached == 0 or variant.size_bytes == 0:
@@ -1276,6 +1424,11 @@ async def list_cached_gguf(
                         "size_bytes": total_size,
                         "cache_path": str(repo_info.repo_path),
                     }
+        for repo in _iter_antfly_cached_gguf_repos():
+            key = repo["repo_id"].lower()
+            existing = seen_lower.get(key)
+            if existing is None or repo["size_bytes"] > existing["size_bytes"]:
+                seen_lower[key] = repo
         cached = sorted(seen_lower.values(), key = lambda c: c["repo_id"])
         return {"cached": cached}
     except Exception as e:

@@ -132,7 +132,7 @@ def test_stream_emits_role_then_deltas_then_done():
 
     events = _collect_sse(chunks)
 
-    # Role chunk first.
+    # Role chunk is emitted once the first content token is available.
     assert events[0]["choices"][0]["delta"].get("role") == "assistant"
 
     # Then one delta per incremental slice.
@@ -145,6 +145,29 @@ def test_stream_emits_role_then_deltas_then_done():
 
     # [DONE] sentinel last.
     assert events[-1].get("_done") is True
+
+
+def test_stream_does_not_emit_role_preamble_before_first_token_error():
+    helper = _load_helper()
+
+    class _FailingTermite:
+        is_loaded = True
+        model_identifier = "google/gemma-3-1b-it"
+
+        def generate_chat_completion(self, **_):
+            raise RuntimeError("boom before first token")
+            yield  # pragma: no cover
+
+    async def run():
+        gen = helper.stream_termite_chat(
+            payload = _FakePayload(),
+            request = _FakeRequest(),
+            termite_backend = _FailingTermite(),
+        )
+        return [chunk async for chunk in gen]
+
+    with pytest.raises(RuntimeError, match = "boom before first token"):
+        asyncio.run(run())
 
 
 def test_stream_stops_on_disconnect():
